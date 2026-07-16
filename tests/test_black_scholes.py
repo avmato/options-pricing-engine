@@ -173,3 +173,76 @@ def test_rejects_invalid_value_inside_array() -> None:
             volatility=0.25,
             time_to_expiry=1.0,
         )
+
+def test_call_price_increases_with_spot() -> None:
+    spots = np.array([80.0, 90.0, 100.0, 110.0, 120.0])
+
+    call_prices = black_scholes_call(
+        spot=spots,
+        strike=100.0,
+        rate=0.04,
+        volatility=0.25,
+        time_to_expiry=30.0 / 365.0,
+    )
+
+    assert np.all(np.diff(call_prices) > 0)
+
+
+def test_put_price_decreases_with_spot() -> None:
+    spots = np.array([80.0, 90.0, 100.0, 110.0, 120.0])
+
+    put_prices = black_scholes_put(
+        spot=spots,
+        strike=100.0,
+        rate=0.04,
+        volatility=0.25,
+        time_to_expiry=30.0 / 365.0,
+    )
+
+    assert np.all(np.diff(put_prices) < 0)
+
+def test_call_price_increases_with_volatility() -> None:
+    volatilities = np.array([0.10, 0.20, 0.30, 0.40, 0.50])
+
+    call_prices = black_scholes_call(
+        spot=100.0,
+        strike=100.0,
+        rate=0.04,
+        volatility=volatilities,
+        time_to_expiry=30.0 / 365.0,
+    )
+
+    assert np.all(np.diff(call_prices) > 0)
+
+
+def test_put_price_increases_with_volatility() -> None:
+    volatilities = np.array([0.10, 0.20, 0.30, 0.40, 0.50])
+
+    put_prices = black_scholes_put(
+        spot=100.0,
+        strike=100.0,
+        rate=0.04,
+        volatility=volatilities,
+        time_to_expiry=30.0 / 365.0,
+    )
+
+    assert np.all(np.diff(put_prices) > 0)
+
+def test_atm_call_and_put_are_equal_at_zero_rate() -> None:
+    call_price = black_scholes_call(
+        spot=100.0,
+        strike=100.0,
+        rate=0.0,
+        volatility=0.25,
+        time_to_expiry=1.0,
+    )
+
+    put_price = black_scholes_put(
+        spot=100.0,
+        strike=100.0,
+        rate=0.0,
+        volatility=0.25,
+        time_to_expiry=1.0,
+    )
+
+    assert call_price == pytest.approx(put_price)
