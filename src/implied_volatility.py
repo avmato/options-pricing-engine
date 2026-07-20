@@ -25,15 +25,15 @@ def implied_volatility_bisection(
 ) -> float:
     """Return implied volatility using the bisection method."""
 
+    if market_price < 0:
+        raise ValueError("Market price cannot be negative.")
+
     if option_type == "call":
         pricing_function: Callable[..., float] = black_scholes_call
     elif option_type == "put":
         pricing_function = black_scholes_put
     else:
         raise ValueError("option_type must be 'call' or 'put'.")
-
-        if market_price < 0:
-            raise ValueError("Market price cannot be negative.")
 
     if option_type == "call":
         lower_bound, upper_bound = call_price_bounds(
