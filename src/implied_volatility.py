@@ -99,3 +99,46 @@ def implied_volatility_bisection(
     raise RuntimeError(
         "Bisection did not converge within max_iterations."
     )
+
+def implied_volatility_for_chain(
+    market_prices,
+    spot,
+    strikes,
+    rate,
+    times_to_expiry,
+    option_type,
+):
+    """Return implied volatilities for an option chain."""
+
+    if not (
+        len(market_prices)
+        == len(strikes)
+        == len(times_to_expiry)
+    ):
+        raise ValueError(
+            "market_prices, strikes, and times_to_expiry "
+            "must have the same length."
+        )
+
+    implied_volatilities = []
+
+    for market_price, strike, time_to_expiry in zip(
+        market_prices,
+        strikes,
+        times_to_expiry,
+    ):
+        try:
+            implied_volatility = implied_volatility_bisection(
+                market_price=float(market_price),
+                spot=float(spot),
+                strike=float(strike),
+                rate=float(rate),
+                time_to_expiry=float(time_to_expiry),
+                option_type=option_type,
+            )
+        except (ValueError, RuntimeError):
+            implied_volatility = float("nan")
+
+        implied_volatilities.append(implied_volatility)
+
+    return implied_volatilities
