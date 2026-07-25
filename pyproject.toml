@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "optlab"
+version = "0.2.0"
+description = "A no-arbitrage audit of listed option quotes: what survives the bid-ask spread?"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Mehmet Burak Gonul" }]
+keywords = ["options", "arbitrage", "implied-volatility", "market-microstructure"]
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "scipy>=1.11",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+data = ["yfinance>=0.2.40"]
+dev = [
+    "pytest>=8.0",
+    "hypothesis>=6.100",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "pandas-stubs",
+]
+
+[project.scripts]
+optlab = "optlab.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Import from the source tree directly, so the suite runs without an install
+# step. Setuptools' editable hook is skipped by CPython 3.13 (it names the
+# .pth file with a leading double underscore), and tests should not depend on
+# that working.
+pythonpath = ["src"]
+addopts = "-q --strict-markers"
+markers = ["slow: takes more than a second"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "NPY", "PD"]
+ignore = [
+    "PD901",  # `df` is a fine name for a local dataframe
+    "B008",
+]
+
+[tool.mypy]
+# Enforced on the numerical core, where the types are arrays and floats and a
+# type error is a real bug. The dataframe layers are checked by the test suite
+# instead: pandas-stubs cannot express "this column holds floats", so running
+# mypy over them produces noise rather than signal.
+files = ["src/optlab/core"]
+strict_equality = true
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true

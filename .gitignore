@@ -222,3 +222,5 @@ __marimo__/
 .ipynb_checkpoints/
 data/raw/*
 !data/raw/.gitkeep
+# generated analysis output (reproducible with: python -m optlab.cli audit ...)
+reports/
