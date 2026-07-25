@@ -1,513 +1,198 @@
-# Options Pricing and Implied Volatility Surface Engine
+# optlab — a no-arbitrage audit of listed option quotes
 
-A Python options analytics project that implements Black–Scholes pricing, option Greeks, implied volatility estimation, real option-chain processing, volatility-smile analysis, and multi-expiry implied volatility surfaces.
+**Question.** A public SPY option chain looks like it is full of free money: put-call
+parity fails, butterflies price negative, boxes trade below their guaranteed payoff. How
+much of that is the market, how much is the modelling convention, and how much is simply
+the bid-ask spread?
 
-The project downloads real SPY option-chain data, filters unreliable market quotes, calculates implied volatility from bid–ask midpoints, selects out-of-the-money options, and constructs a common volatility-surface grid across multiple expirations.
+**Answer, on the snapshot in this repository.** Of **1,264** apparent static-arbitrage
+violations at the midpoint, **zero** survive once each leg is priced where a taker could
+actually trade and stale quotes are excluded. Every violation that survives execution
+prices involves a contract that has not traded in **at least 39.8 days** and sits at
+least **10% away from the money**.
 
-## Project Overview
+![Apparent arbitrage, filter by filter](figures/funnel.png)
 
-The project covers the complete workflow from theoretical option pricing to real-market volatility analysis:
+| Filter applied | Violations | Total edge |
+|---|---:|---:|
+| All quotes, priced at the mid | 1,264 | $3,597 |
+| Priced at executable (buy the ask, sell the bid) | 172 | $2,919 |
+| Open interest > 0 on every leg | 129 | $1,747 |
+| **Every leg traded within 2 days** | **0** | **$0** |
+| Relative spread ≤ 5% on every leg | 0 | $0 |
 
-1. Implement Black–Scholes call and put pricing.
-2. Calculate option Greeks.
-3. Recover implied volatility using a bisection solver.
-4. Download real SPY option-chain data.
-5. Clean bid–ask quotes and remove unreliable observations.
-6. Check theoretical option-price bounds.
-7. Construct single-expiry volatility smiles.
-8. Compare smiles across multiple expirations.
-9. Build the ATM volatility term structure.
-10. Interpolate market observations onto a common grid.
-11. Visualize the implied volatility surface.
-12. Run the entire processing pipeline from one command.
+Everything below is reproduced from one command; see [Reproducing](#reproducing).
 
-## Features
+---
 
-### Black–Scholes Pricing
+## Three findings
 
-The engine implements European call and put pricing using:
+### 1. Nearly all "arbitrage" in a retail option chain is the spread, and the rest is dead quotes
 
-$begin:math:display$
-C \= S N\(d\_1\) \- K e\^\{\-rT\}N\(d\_2\)
-$end:math:display$
+The midpoint is not a price you can trade at. Pricing every leg where a taker actually
+transacts removes 86% of the violations immediately. Of the remainder, none involves a
+live contract: the surviving portfolios are built from quotes a median of **44.9 days**
+old on strikes with zero open interest — leftover book entries rather than markets.
 
-$begin:math:display$
-P \= K e\^\{\-rT\}N\(\-d\_2\) \- S N\(\-d\_1\)
-$end:math:display$
+The cut is not tuned. Varying the staleness threshold over two orders of magnitude does
+not change the answer:
 
-where:
+| Max quote age allowed | 0.5d | 1d | 2d | 5d | 10d | 30d | ∞ |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Surviving violations | 0 | 0 | 0 | 0 | 0 | 0 | 129 |
 
-$begin:math:display$
-d\_1 \=
-\\frac\{
-\\ln\(S\/K\) \+
-\\left\(r\+\\frac\{\\sigma\^2\}\{2\}\\right\)T
-\}\{
-\\sigma\\sqrt\{T\}
-\}
-$end:math:display$
+### 2. A fifth of the "violations" are manufactured by assuming European exercise
 
-$begin:math:display$
-d\_2\=d\_1\-\\sigma\\sqrt\{T\}
-$end:math:display$
+Listed US equity options are American. Early exercise widens the no-arbitrage band: the
+floor rises to the immediate exercise value, and — the case that matters most — a *short*
+box spread can be assigned early, so it is capped at the undiscounted strike gap
+`K₂ − K₁` rather than at `D·(K₂ − K₁)`.
 
-### Greeks
+| Bounds convention | Violations at mid | Invented |
+|---|---:|---:|
+| American (correct for SPY) | 1,264 | — |
+| European (textbook screen) | 1,574 | **310 (19.7%)** |
 
-The project calculates:
+Screening American quotes against European bounds produces 310 violations that the
+exercise right fully explains. Run `--exercise-style european` to reproduce.
 
-- Call delta
-- Gamma
-- Vega
-- Call theta
-- Call rho
+### 3. Put-call parity identifies the forward, but not the interest rate
 
-Vega and rho can be reported per one percentage-point change, while theta can be reported per calendar day.
+Parity says `C − P = D(F − K)`: plot the call-put difference against the strike and you
+get a straight line whose intercept gives `D·F` and whose slope gives `−D`. It is tempting
+to read both off one regression. The forward comes out clean — the fit has R² > 0.9998 and
+a standard error of **under 2 cents** on a $740 forward. The rate does not, because
 
-### Implied Volatility Solver
+$$\frac{\partial r}{\partial D} = -\frac{1}{DT},$$
 
-Implied volatility is recovered numerically by solving:
+so at one week a slope error of 0.1% becomes a rate error of 5%. On this snapshot the joint
+fit returns discount factors **above one** at every maturity — negative interest rates,
+which is not a market observation but a measurement failure.
 
-$begin:math:display$
-BS\(S\,K\,r\,T\,\\sigma\)
-\=
-\\text\{market price\}
-$end:math:display$
+So the library takes the discount factor from the money market, where it is observable to a
+basis point, and implies only the forward from the options. The same amplification is why
+box spreads cannot pin the rate down either: over six days the interest carried by a $10
+box is **$0.007**, against $0.14 of spread across its four legs — twenty times more spread
+than signal.
 
-The implementation uses the bisection method and includes validation for:
+**Consequence for the smile.** A wrong forward pushes call and put implied volatilities in
+*opposite* directions, because their deltas have opposite signs. Assuming "4%, no
+dividends" misprices the 83-day forward by $2.24 and opens a call/put IV gap that is
+entirely an artefact. Implying the forward from parity closes between 9% and 55% of it:
 
-- Negative market prices
-- Unsupported option types
-- Prices outside theoretical bounds
-- Roots outside the volatility search interval
-- Failed numerical convergence
+![Convention error](figures/convention_error.png)
 
-### Real Option-Chain Data
+---
 
-The project downloads SPY option chains using `yfinance`.
+## What the library does
 
-Each downloaded row includes metadata such as:
+```
+src/optlab/
+├── core/           Black-76 pricing, Greeks, implied volatility, time conventions
+├── market/         quote metrics, filtering, the forward curve implied by parity
+├── audit/          six static no-arbitrage checks, at mid and executable prices
+├── study/          convention error, exercise style, staleness sensitivity
+└── report/         figures and the solver benchmark
+```
 
-- Option type
-- Strike
-- Bid and ask
-- Last traded price
-- Expiration
-- Spot price
-- Download timestamp
-- Volume
-- Open interest
-- Vendor-provided implied volatility
+**Priced off the forward, not off a guessed rate.** Every function takes `(F, D)` rather
+than `(S, r, q)`, so no risk-free rate or dividend assumption is baked in anywhere.
 
-The download timestamp is stored because option quotes can change significantly depending on whether the market is open and whether the quote snapshot is current.
-
-### Data Cleaning
-
-The cleaning pipeline adds:
-
-$begin:math:display$
-\\text\{mid price\}
-\=
-\\frac\{\\text\{bid\}\+\\text\{ask\}\}\{2\}
-$end:math:display$
-
-$begin:math:display$
-\\text\{relative spread\}
-\=
-\\frac\{\\text\{ask\}\-\\text\{bid\}\}\{\\text\{mid price\}\}
-$end:math:display$
-
-$begin:math:display$
-\\text\{moneyness\}
-\=
-\\frac\{K\}\{S\}
-$end:math:display$
-
-$begin:math:display$
-\\text\{log\-moneyness\}
-\=
-\\log\(K\/S\)
-$end:math:display$
-
-It then filters observations using configurable conditions:
-
-- Positive bid
-- Positive ask
-- Ask greater than or equal to bid
-- Positive midpoint
-- Maximum relative bid–ask spread
-- Minimum and maximum moneyness
-
-The default moneyness interval is:
-
-$begin:math:display$
-0\.80 \\leq K\/S \\leq 1\.20
-$end:math:display$
-
-### Theoretical Price Bounds
-
-Before solving for implied volatility, market midpoints are checked against European option-price bounds.
-
-For calls:
-
-$begin:math:display$
-\\max\(S\-Ke\^\{\-rT\}\,0\)
-\\leq C \\leq S
-$end:math:display$
-
-For puts:
-
-$begin:math:display$
-\\max\(Ke\^\{\-rT\}\-S\,0\)
-\\leq P \\leq Ke\^\{\-rT\}
-$end:math:display$
-
-Rows outside these bounds are marked invalid and are not passed to the implied-volatility solver.
-
-### OTM Volatility Smile
-
-For each expiration, the project creates a single volatility curve using:
-
-- OTM puts when $begin:math:text$K\<S$end:math:text$
-- OTM calls when $begin:math:text$K\\geq S$end:math:text$
-
-OTM options are preferred because their market prices are generally more informative for volatility analysis than deep in-the-money quotes.
-
-### Multi-Expiry Analysis
-
-The downloader selects expirations close to target maturities such as:
-
-- 7 days
-- 14 days
-- 30 days
-- 60 days
-- 90 days
-
-The resulting dataset contains short-, medium-, and longer-dated options instead of several nearly identical adjacent expirations.
-
-### ATM Volatility Term Structure
-
-For each expiration, the contract with the smallest absolute log-moneyness is used as an ATM approximation:
-
-$begin:math:display$
-\\operatorname\*\{argmin\}
-\\left\|
-\\log\(K\/S\)
-\\right\|
-$end:math:display$
-
-The resulting chart shows how ATM implied volatility changes with time to expiry.
-
-### Implied Volatility Surface
-
-Each expiration may contain a different set of strikes. The project therefore interpolates every volatility smile onto a shared log-moneyness grid.
-
-The common interval is restricted to the region supported by every selected expiration. This avoids artificial extrapolation and prevents missing regions in the final surface.
-
-The final surface has:
-
-- Log-moneyness on one axis
-- Days to expiry on the second axis
-- Implied volatility on the vertical or shading dimension
-
-## Visual Results
-
-### Single-Expiry OTM Volatility Curve
-
-![Single-expiry OTM volatility curve](figures/SPY_2026-08-21_otm_iv_by_log_moneyness.png)
-
-### Multi-Expiry Volatility Smiles
-
-![Multi-expiry volatility smiles](figures/SPY_multi_expiry_otm_iv_by_log_moneyness.png)
-
-### ATM Volatility Term Structure
-
-![ATM implied volatility term structure](figures/SPY_atm_iv_term_structure.png)
-
-### Implied Volatility Heatmap
-
-![Implied volatility heatmap](figures/SPY_iv_surface_heatmap.png)
-
-### Implied Volatility Contour Plot
-
-![Implied volatility contour plot](figures/SPY_iv_surface_contour.png)
-
-### Three-Dimensional Volatility Surface
-
-![Three-dimensional implied volatility surface](figures/SPY_iv_surface_3d.png)
-
-### Gamma Across Expirations
-
-![Call gamma across expirations](figures/SPY_real_call_gamma.png)
-
-### Vega Across Expirations
-
-![Call vega across expirations](figures/SPY_real_call_vega.png)
-
-## Observations
-
-The analyzed SPY snapshot produced several recognizable option-market patterns.
-
-### Downside Skew
-
-Low-strike OTM puts had higher implied volatility than ATM and OTM call options.
-
-The downside skew was particularly steep for short-dated expirations, indicating that near-term downside protection was relatively expensive in the observed snapshot.
-
-### ATM Term Structure
-
-ATM implied volatility was highest for the shortest expiration and then stabilized around a lower level for medium and longer maturities.
-
-### Gamma
-
-Gamma was concentrated around ATM.
-
-Short-dated options produced taller and narrower gamma peaks, showing that their deltas changed more rapidly in response to small spot-price movements.
-
-### Vega
-
-Vega was largest near ATM and increased with maturity.
-
-Longer-dated options therefore had greater sensitivity to changes in implied volatility.
-
-### Theta
-
-Theta was generally most negative around ATM.
-
-Short-dated options experienced faster time decay, although noisy deep in-the-money quotes occasionally produced unstable implied-volatility and theta estimates.
-
-## End-to-End Pipeline
-
-The complete data-processing workflow can be run with:
+**The six checks.** Price bounds, monotonicity in strike, vertical spread caps, butterfly
+convexity, box spreads, and calendar monotonicity. Each constructs a portfolio whose payoff
+is non-negative in every state of the world and asks whether it can be put on for a credit
+— no volatility model and no distributional assumption is involved, which is what makes a
+violation a fact rather than a disagreement with Black-Scholes.
+
+**Implied volatility.** In-the-money quotes are mapped to their out-of-the-money twin by
+parity before inversion, which removes a catastrophic cancellation, and a safeguarded
+Newton iteration (`rtsafe`) runs on a shrinking active set. Quotes whose vega is too small
+to determine a volatility are reported as `NOT_IDENTIFIED` rather than given a
+plausible-looking wrong answer.
+
+| Solver | Max error (vol points) | µs per quote |
+|---|---:|---:|
+| Safeguarded Newton (this library) | 0 | 4.50 |
+| Bisection, tolerance 1e-8 (textbook) | 4.6 × 10⁻⁹ | 4.21 |
+| Bisection, matched accuracy (1e-15) | 0 | 7.45 |
+
+At equal accuracy the Newton iteration is 1.65× faster; the first version was *slower*
+than bisection until the loop was changed to drop converged quotes instead of running the
+whole array until the worst wing option finished.
+
+---
+
+## Reproducing
 
 ```bash
-python day18_run_pipeline.py
+pip install -e ".[dev]"
 ```
-
-This command:
-
-1. Reads the raw multi-expiry SPY option chain.
-2. Adds quote-quality columns.
-3. Filters invalid and low-quality quotes.
-4. Calculates time to expiry.
-5. Checks theoretical price bounds.
-6. Solves implied volatility.
-7. Selects OTM options.
-8. Builds the shared surface grid.
-9. Saves processed datasets.
-
-Example output from the current snapshot:
-
-```text
-Raw rows: 2142
-Rows after cleaning: 1558
-Successful IV calculations: 1491
-Failed IV calculations: 67
-OTM rows: 820
-Surface grid shape: 5 x 60
-Surface missing values: 0
-```
-
-## Project Structure
-
-```text
-options-pricing-engine/
-│
-├── src/
-│   ├── arbitrage.py
-│   ├── black_scholes.py
-│   ├── data_cleaning.py
-│   ├── greeks.py
-│   ├── implied_volatility.py
-│   ├── market_utils.py
-│   ├── option_pipeline.py
-│   └── time_utils.py
-│
-├── tests/
-│   ├── test_data_cleaning.py
-│   ├── test_implied_volatility.py
-│   ├── test_option_pipeline.py
-│   └── ...
-│
-├── data/
-│   ├── raw/
-│   ├── clean/
-│   └── processed/
-│
-├── figures/
-│
-├── day13_download_multiple_expiries.py
-├── day13_process_multiple_expiries.py
-├── day14_multi_expiry_smiles.py
-├── day15_build_iv_surface_grid.py
-├── day16_plot_iv_surface.py
-├── day17_real_chain_greeks.py
-├── day18_run_pipeline.py
-└── README.md
-```
-
-## Installation
-
-Create and activate a virtual environment:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+python -m optlab.cli audit data/snapshots/SPY_2026-07-25_multi_expiry.csv
 ```
 
-Install the required packages:
+That writes every table in this README to `reports/` and every figure to `figures/`. To
+capture a fresh chain (needs `pip install ".[data]"`):
 
 ```bash
-pip install numpy pandas scipy matplotlib yfinance pytest
+python -m optlab.cli fetch --ticker SPY --target-days 7 14 30 60 90
 ```
 
-## Running the Tests
+A GitHub Action captures one snapshot after every US close, so the study grows into a panel
+rather than resting on a single day.
 
-Run the complete test suite with:
+### Tests
 
 ```bash
-pytest
+pytest -q
 ```
 
-Current result:
+98 tests. The suite is built around a synthetic chain generated from flat-volatility
+Black-76 prices, which is arbitrage-free by construction: any violation the audit reports
+on it is a bug, and any injected violation it misses is a blind spot. Both directions are
+tested for all six checks. Greeks are validated against central finite differences of the
+pricer itself, and the property-based tests (Hypothesis) assert parity, monotonicity and
+convexity across thousands of random parameter sets.
 
-```text
-64 passed
-```
+Two real bugs were found this way and are fixed: the solver silently returned wrong
+volatilities for deep in-the-money quotes where vega vanishes, and the checks flagged
+floating-point ties as arbitrage.
 
-The tests cover areas including:
+---
 
-- Black–Scholes pricing
-- Put–call relationships
-- Option Greeks
-- Implied-volatility recovery
-- Invalid market prices
-- Option-chain IV calculation
-- Quote-quality columns
-- Data-cleaning filters
-- Theoretical price bounds
-- OTM option selection
-- Surface-grid construction
-- Missing-value prevention
+## Honest limitations
 
-## Running the Analysis
+- **One snapshot, taken on a Saturday.** Every quote is a Friday-close leftover, which is
+  the worst case for staleness and almost certainly inflates the mid-price violation count.
+  The daily snapshot job exists to fix this; until it has run for a while, treat the
+  headline as one day's evidence.
+- **The vendor's spot may not be synchronous with the option quotes.** The implied dividend
+  yield wanders between 1.0% and 2.5% across maturities, against a true SPY yield near
+  1.2%; most of that spread is asynchronous sampling, not dividend expectations.
+- **Quotes are not the book.** Displayed size is unknown, so "executable" means executable
+  for one contract at the touch, ignoring depth and fees.
+- **No early-exercise model.** American bounds are handled exactly, but no binomial or
+  Bjerksund-Stensland price is computed, so implied volatilities inherit a small
+  early-exercise bias for deep in-the-money contracts.
+- **Call-side quotes are wider than put-side quotes** by 1.1× to 4.7× near the money in
+  this snapshot. Any parity-based estimate inherits that asymmetry.
 
-### Download multiple expirations
+## What I would do next
 
-```bash
-python day13_download_multiple_expiries.py
-```
+1. Run the audit across the accumulating snapshot panel and report violation rates per day
+   rather than per snapshot.
+2. Add a Bjerksund-Stensland American pricer so implied volatilities are exercise-consistent
+   deep in the money.
+3. Compare a paid, timestamped quote feed against this vendor snapshot to separate genuine
+   microstructure from data artefacts.
 
-### Process the option chains and calculate IV
+## References
 
-```bash
-python day13_process_multiple_expiries.py
-```
+The relations tested here are standard; the framing follows Merton (1973) for the rational
+bounds, and the treatment of executable versus mid pricing follows the market-microstructure
+convention that an apparent arbitrage inside the spread is not one.
 
-### Plot multi-expiry smiles and ATM term structure
+## License
 
-```bash
-python day14_multi_expiry_smiles.py
-```
-
-### Construct the shared volatility grid
-
-```bash
-python day15_build_iv_surface_grid.py
-```
-
-### Plot the volatility surface
-
-```bash
-python day16_plot_iv_surface.py
-```
-
-### Calculate real-chain Greeks
-
-```bash
-python day17_real_chain_greeks.py
-```
-
-### Run the reusable end-to-end pipeline
-
-```bash
-python day18_run_pipeline.py
-```
-
-## Methodological Choices
-
-### Midpoint Pricing
-
-The bid–ask midpoint is used as the market-price estimate:
-
-$begin:math:display$
-M\=\\frac\{\\text\{bid\}\+\\text\{ask\}\}\{2\}
-$end:math:display$
-
-This is preferable to relying only on the last traded price, which may be stale.
-
-### OTM Option Selection
-
-OTM puts and calls are combined to form the volatility smile. This reduces reliance on deep in-the-money options, whose quotes may be wider or less synchronized.
-
-### Log-Moneyness
-
-Log-moneyness is used instead of raw strike:
-
-$begin:math:display$
-\\log\(K\/S\)
-$end:math:display$
-
-This gives a relative measure of strike and makes smiles across different spot levels easier to compare.
-
-### Shared Surface Support
-
-The volatility surface is built only over the log-moneyness interval observed for every expiration.
-
-The engine does not extrapolate beyond the common market support.
-
-### Linear Interpolation
-
-Implied volatility is linearly interpolated between observed market strikes.
-
-This provides a transparent and stable baseline surface without introducing a complex parametric volatility model.
-
-## Limitations
-
-The current implementation intentionally uses several simplifying assumptions:
-
-- European Black–Scholes pricing
-- Constant risk-free rate
-- No continuous dividend yield
-- No early-exercise adjustment
-- Linear interpolation across moneyness
-- No calendar-arbitrage correction
-- No butterfly-arbitrage correction
-- Market data obtained from a public data source
-- Bid and ask quotes may not be perfectly synchronized
-- Deep ITM and very short-dated contracts may contain unstable IV estimates
-
-SPY options are American-style and SPY pays dividends. Therefore, the current model is an approximation, particularly for deep in-the-money contracts.
-
-## Possible Extensions
-
-Future improvements could include:
-
-- Continuous dividend-yield support
-- Put Greeks
-- American-option pricing
-- Binomial-tree pricing
-- Newton or Brent implied-volatility solvers
-- Live risk-free-rate input
-- SVI or SABR smile fitting
-- Calendar-arbitrage checks
-- Butterfly-arbitrage checks
-- Surface smoothing
-- Delta-based volatility surfaces
-- Interactive Plotly visualizations
-- Command-line configuration
-- Automated daily market-data snapshots
-- Comparison across multiple underlyings
-
-## Disclaimer
-
-This project is intended for educational and research purposes. It is not investment advice and should not be used as a production trading or risk-management system without additional validation.
+MIT.
